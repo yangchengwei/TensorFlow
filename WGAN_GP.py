@@ -4,7 +4,9 @@ import random
 import numpy as np
 import tensorflow as tf
 import matplotlib.pyplot as plt
+from os import listdir
 from skimage import io
+from skimage import transform
 from model_function import *
 
 class WGAN_GP(object):
@@ -28,22 +30,47 @@ class WGAN_GP(object):
         self.channelOut = 1
         self.imageHeight = 128
         self.imageWidth = 128
-        self.lambd = 500       # The higher value, the more stable, but the slower convergence
+        self.lambd = 10       # The higher value, the more stable, but the slower convergence
 
         # FIXME: initial
         self.readList = []
         self.testData = -1
         self.interval = 9
+        self.training_list_input = []
+        self.training_list_output = []
+        self.history_generated_list = []
         return
 
+
+    def read_training_data(self):
+#        path_input = ''
+#        path_output = ''
+#        inFiles = listdir(path_input)
+#        for file in inFiles:
+        for i in range(0,395):
+            image_input = io.imread('./../spine_CT data/patient 1/bmp/' + '0000%d.bmp'%(i+1), as_grey=True)
+            image_output = io.imread('./../spine_CT data/patient 1/graph cut result/' + '%05d.bmp'%(i), as_grey=True)
+            image_input = transform.resize(image_input, [self.imageHeight,self.imageWidth])
+            image_output = transform.resize(image_output, [self.imageHeight,self.imageWidth])
+            image_input = image_input.reshape( 1, self.imageHeight, self.imageWidth, self.channelIn)
+            image_output = image_output.reshape( 1, self.imageHeight, self.imageWidth, self.channelOut)
+            image_input = image_input/255 if image_input.max() > 1 else image_input
+            image_output = image_output/255 if image_output.max() > 1 else image_output
+            self.training_list_input.append(image_input)
+            self.training_list_output.append(image_output)
+        return
 
     def reset_training_data(self):
         self.readList.clear()
         # FIXME: self.readList=list(range(...))
+        '''
         self.readList =      list(range(        1, 5*14*6+1))
         self.readList.extend(list(range( 8*14*6+1,13*14*6+1)))
         self.readList.extend(list(range(16*14*6+1,21*14*6+1)))
         self.readList.extend(list(range(24*14*6+1,29*14*6+1)))
+        '''
+        self.readList = list(range(0,395,10))
+#        print(len(self.readList))
         return
 
 
@@ -68,13 +95,12 @@ class WGAN_GP(object):
             else :
                 readNow = self.readList.pop()
             # FIXME: input image
-            im = io.imread('./../downsize_input/' + '%04d.bmp'%(readNow), as_grey=True)
-            im = im.reshape( 1, self.imageHeight, self.imageWidth, self.channelIn) /255
+            im = self.training_list_input[readNow]
             inputImage = np.append(inputImage, im, axis=0)
 
-            im = io.imread('./../downsize_output/' + '%04d.bmp'%(readNow), as_grey=True)
-            im = im.reshape( 1, self.imageHeight, self.imageWidth, self.channelOut) /255
+            im = self.training_list_output[readNow]
             outputImage = np.append(outputImage, im, axis=0)
+#            print (inputImage.max(),outputImage.max())
         return inputImage, outputImage, readNow
 
 
@@ -94,11 +120,12 @@ class WGAN_GP(object):
         with tf.variable_scope(scope, reuse = tf.AUTO_REUSE):
             #FIXME:
             out = conv2d(input_tensor, self.channelOut, self.channel1, scope='conv1', s=2, addBias=True, activated=True)
-            out = max_pool(out)
+            out = avg_pool(out)
             out = conv2d(out, self.channel1, self.channel2, scope='conv2', s=2, addBias=True, batchNorm=True, activated=True)
-            out = max_pool(out)
-            out = flatten(out) #64 * channel2
-            out = linear(out, 2048, 512, scope='linear1', addBias=True, activated=True)
+            out = avg_pool(out)
+            out = flatten(out)
+            tempSize = self.channel2*self.imageHeight*self.imageWidth/4/4/4/4
+            out = linear(out, tempSize, 512, scope='linear1', addBias=True, activated=True)
             out = linear(out, 512, 64, scope='linear2', addBias=True, activated=True)
             out = linear(out, 64, 1, scope='linear3', addBias=True)
             return out
@@ -136,8 +163,8 @@ class WGAN_GP(object):
         D_vars = [var for var in T_vars if 'discriminator' in var.name]
         G_vars = [var for var in T_vars if 'generator' in var.name]
 
-        self.D_opti = tf.train.RMSPropOptimizer(self.LR).minimize(self.D_loss, var_list=D_vars)
-        self.G_opti = tf.train.RMSPropOptimizer(self.LR*5).minimize(self.G_loss, var_list=G_vars)
+        self.D_opti = tf.train.AdamOptimizer(self.LR).minimize(self.D_loss, var_list=D_vars)
+        self.G_opti = tf.train.AdamOptimizer(self.LR*5).minimize(self.G_loss, var_list=G_vars)
 
         self.saver = tf.train.Saver()
         tf.get_variable_scope().reuse_variables()
@@ -149,7 +176,7 @@ class WGAN_GP(object):
         D_avgLossSet = []
         G_avgLossSet = []
         tempRate = self.learningRate
-
+        self.read_training_data()
         print('Training Start!')
 
         allStart = time.time()
@@ -164,6 +191,10 @@ class WGAN_GP(object):
             epochStart = time.time()
             while (len(self.readList) != 0):
                 trainX, trainY, readNow = self.read_image(self.batchSize)
+#                for i in range(4):
+#                     _ = self.sess.run(self.D_opti, feed_dict={self.IP : trainX,
+#                                                               self.GT : trainY,
+#                                                               self.LR : tempRate})
                 _, D_batchLoss, _, G_batchLoss = self.sess.run([self.D_opti, self.D_loss, self.G_opti, self.G_loss],
                                              feed_dict={self.IP : trainX,
                                                         self.GT : trainY,
@@ -172,16 +203,12 @@ class WGAN_GP(object):
                 G_sumLoss += G_batchLoss
                 batch = batch + 1
 
-            self.readList = [5*14*6+1,1,1,1,1,1,1,1,1,1,1,1,1,1]
-            trainX, trainY, readNow = self.read_image(self.batchSize)
-            image = self.sess.run(self.G_fake, feed_dict={self.IP : trainX})
-            image = image[0].reshape(self.imageHeight,self.imageWidth)
-            image[image >=0.5]=1
-            image[image < 0.5]=0
-            io.imsave(self.outputDir + '%04d.bmp'%(epoch),image)
-            
+#                if ((batch)%7 == 0):
+#                    print('Batch: %04d D_batchLoss: %.9f G_batchLoss: %.9f'%(batch,D_batchLoss,G_batchLoss))
+
+
             epochEnd = time.time()
-            
+
 
             D_avgLoss = D_sumLoss / batch
             G_avgLoss = G_sumLoss / batch
@@ -195,32 +222,37 @@ class WGAN_GP(object):
             D_avgLossSet.append(D_avgLoss)
             G_avgLossSet.append(G_avgLoss)
 
-            if (epoch == self.numOfEpochs / 2):
-                tempRate = tempRate / 10
-
-                print('Change learningRate to %f'%(tempRate))
-                cmdFile = open(self.informationDir+'cmd.txt','a')
-                cmdFile.write('Change learningRate to %f\n'%(tempRate))
-                cmdFile.close()
-
+            
+            if (epoch%50 == 0):
+                templist = [4,204,390,0,0,0,0,0,0,0]
+                self.readList = templist.copy()
+                self.readList.reverse()
+                trainX, trainY, readNow = self.read_image(self.batchSize, rand=False)
+                batchImage = self.sess.run(self.G_fake, feed_dict={self.IP : trainX})
+                self.readList = templist.copy()
+                for i in range(3):
+                    image = batchImage[i].reshape(self.imageHeight,self.imageWidth)
+                    image[image >=0.5]=1
+                    image[image < 0.5]=0
+                    io.imsave(self.outputDir + 'epoch%04d_image%04d.jpg'%(epoch,self.readList[i]),image)
+            
+            if (epoch%200 == 0):
                 # plot D
                 plt.plot(epochSet,D_avgLossSet)
                 plt.xlabel('epoch')
                 plt.ylabel('loss')
+#                plt.ylim(-10000,10000)
                 plt.savefig(self.informationDir+'D_loss%d.png'%(epoch), dpi=100)
                 plt.show()
-                
                 # plot G
                 plt.plot(epochSet,G_avgLossSet)
                 plt.xlabel('epoch')
                 plt.ylabel('loss')
+#                plt.ylim(-10000,10000)
                 plt.savefig(self.informationDir+'G_loss%d.png'%(epoch), dpi=100)
                 plt.show()
-
-                # plot init
-                epochSet = []
-                D_avgLossSet = []
-                G_avgLossSet = []
+                #save weight
+                self.saver.save(self.sess, self.informationDir+'model%d.ckpt'%(epoch))
 
         allEnd = time.time()
 
@@ -235,15 +267,13 @@ class WGAN_GP(object):
         plt.ylabel('loss')
         plt.savefig(self.informationDir+'D_loss%d.png'%(epoch), dpi=100)
         plt.show()
-        
+
         # plot G
         plt.plot(epochSet,G_avgLossSet)
         plt.xlabel('epoch')
         plt.ylabel('loss')
         plt.savefig(self.informationDir+'G_loss%d.png'%(epoch), dpi=100)
         plt.show()
-
-        self.saver.save(self.sess, self.informationDir+'model%d.ckpt'%(self.interval))
         return
 
 
